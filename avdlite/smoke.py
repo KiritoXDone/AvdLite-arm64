@@ -11,7 +11,7 @@ import time
 from pathlib import Path
 from .arm64 import ABI, validate_emulation
 from .checksums import file_digest
-from .boot_progress import BootProgress
+from .boot_progress import BootProgress, process_cpu_samples
 
 
 def emulator_command(sdk, accel, port):
@@ -69,17 +69,21 @@ class Device:
                 except subprocess.TimeoutExpired:
                     state = 'adb-timeout'
                 android_log = ''
+                cpu = {}
                 if state == 'device':
                     try:
                         android_log = self.shell('logcat', '-b', 'all', '-d', '-t', '80', check=False, timeout=5)
+                        query = 'for n in system_server zygote64 artd dex2oat64 installd; do for p in $(pidof "$n"); do printf "%s " "$n"; cat "/proc/$p/stat"; done; done'
+                        cpu = process_cpu_samples(self.shell('sh', '-c', query, check=False, timeout=5))
                     except subprocess.TimeoutExpired:
                         pass
                 progress.android(state, android_log, time.monotonic())
+                progress.cpu(cpu, time.monotonic())
                 idle = progress.idle_seconds(time.monotonic())
                 last_line = progress.android_line or progress.kernel_line
-                print(f'[waiting] {label}; elapsed={now - started:.0f}s; adb={state}; guest_idle={idle:.0f}s', flush=True)
+                print(f'[waiting] {label}; elapsed={now - started:.0f}s; adb={state}; guest_idle={idle:.0f}s; cpu={cpu}', flush=True)
                 print(f'[guest] {last_line[:300]}', flush=True)
-                (self.evidence / 'progress.json').write_text(json.dumps({'stage': label, 'elapsed_seconds': int(now - started), 'adb': state, 'guest_idle_seconds': int(idle), 'last_guest_line': last_line}) + '\n')
+                (self.evidence / 'progress.json').write_text(json.dumps({'stage': label, 'elapsed_seconds': int(now - started), 'adb': state, 'guest_idle_seconds': int(idle), 'last_guest_line': last_line, 'process_cpu': cpu}) + '\n')
                 next_report = now + 30
             if progress.idle_seconds(time.monotonic()) >= 90:
                 raise TimeoutError(f'Guest made no progress for 90 seconds while waiting for {label}')

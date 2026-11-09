@@ -17,6 +17,7 @@ class BootProgress:
         self.adb_state = 'unavailable'
         self.seen_kernel = set()
         self.seen_android = set()
+        self.process_samples = {}
 
     def kernel(self, tail, now):
         lines = [line for line in tail.splitlines() if re.search(r'\[\s*\d+\.\d+\]', line)]
@@ -43,3 +44,25 @@ class BootProgress:
 
     def idle_seconds(self, now):
         return max(0, now - self.last_activity)
+
+    def cpu(self, samples, now):
+        for name, (pid, ticks) in samples.items():
+            previous = self.process_samples.get(name)
+            # Android's /proc stat counters use USER_HZ=100. Require measurable
+            # CPU work in the same process, not just another restarted PID.
+            if previous and previous[0] == pid and ticks - previous[1] >= 25:
+                self.last_activity = now
+            self.process_samples[name] = (pid, ticks)
+
+
+def process_cpu_samples(output):
+    samples = {}
+    for line in output.splitlines():
+        try:
+            name, stat = line.split(' ', 1)
+            pid = int(stat.split(' ', 1)[0])
+            fields = stat.rsplit(')', 1)[1].split()
+            samples[name] = (pid, int(fields[11]) + int(fields[12]))
+        except (ValueError, IndexError):
+            continue
+    return samples

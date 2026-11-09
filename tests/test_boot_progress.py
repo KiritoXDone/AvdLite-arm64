@@ -1,5 +1,5 @@
 import unittest
-from avdlite.boot_progress import BootProgress
+from avdlite.boot_progress import BootProgress, process_cpu_samples
 
 
 class BootProgressTests(unittest.TestCase):
@@ -29,3 +29,16 @@ class BootProgressTests(unittest.TestCase):
         progress.kernel("[  80.234][ T1] init: service zygote pid 456 failed", 80)
         progress.android('unavailable', '11-09 08:10:10.123 123 456 I logd: new reader', 80)
         self.assertEqual(progress.idle_seconds(100), 90)
+
+    def test_cpu_bound_package_work_is_not_mistaken_for_a_stall(self):
+        progress = BootProgress(0)
+        progress.cpu({'system_server': (123, 100)}, 30)
+        progress.cpu({'system_server': (123, 300)}, 60)
+        self.assertEqual(progress.idle_seconds(90), 30)
+        progress.cpu({'system_server': (456, 500)}, 90)
+        self.assertEqual(progress.idle_seconds(100), 40)
+
+    def test_proc_stat_parser_uses_user_and_system_cpu_fields(self):
+        fields = ['S'] + ['0'] * 10 + ['125', '75'] + ['0'] * 8
+        samples = process_cpu_samples('system_server 123 (system server) ' + ' '.join(fields) + '\nzygote64 denied')
+        self.assertEqual(samples, {'system_server': (123, 200)})
