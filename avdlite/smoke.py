@@ -12,6 +12,17 @@ from .arm64 import ABI, require_arm64
 from .checksums import file_digest
 
 
+def emulator_command(sdk, accel, port):
+    command = [str(sdk / 'emulator/emulator'), '-avd', 'AvdLiteArm64CI', '-port', str(port), '-no-window', '-no-audio',
+               '-no-boot-anim', '-no-snapshot', '-no-metrics', '-memory', '2048', '-gpu', 'swiftshader_indirect',
+               '-feature', '-Vulkan,-HVF' if accel == 'off' else '-Vulkan', '-accel', accel, '-verbose']
+    if accel == 'off':
+        # The ARM64 launcher can still inject -enable-hvf after -accel off.
+        # QEMU's final machine option explicitly selects its software backend.
+        command += ['-qemu', '-machine', 'accel=tcg']
+    return command
+
+
 class Device:
     def __init__(self, sdk, evidence, env, timeout=420, port=5580):
         self.adb = str(sdk / 'platform-tools/adb')
@@ -75,12 +86,11 @@ def verify(sdk, work, manifest, accel='on', boot_timeout=420, port=5580):
                ANDROID_USER_HOME=str(emulator_home), QT_QPA_PLATFORM='offscreen')
     device = Device(sdk, evidence, env, timeout=boot_timeout, port=port)
     subprocess.run([device.adb, 'start-server'], check=True, env=env)
-    report = {'ksu_enabled': bool(manifest['ksu']), 'checks': {}, 'acceleration': accel,
+    report = {'ksu_enabled': bool(manifest['ksu']), 'checks': {}, 'requested_acceleration': accel,
               'host': {'os': platform.system(), 'arch': platform.machine()}, 'system_sha256': file_digest(image / 'system.img')}
     try:
         with (evidence / 'emulator.log').open('w') as log:
-            command = [str(sdk / 'emulator/emulator'), '-avd', 'AvdLiteArm64CI', '-port', str(port), '-no-window', '-no-audio',
-                       '-no-boot-anim', '-no-snapshot', '-no-metrics', '-gpu', 'swiftshader_indirect', '-feature', '-Vulkan', '-accel', accel, '-verbose']
+            command = emulator_command(sdk, accel, port)
             device.process = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT, env=env)
             device.ready()
             report['checks']['abi'] = device.shell('getprop', 'ro.product.cpu.abi')
