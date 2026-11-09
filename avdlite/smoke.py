@@ -9,7 +9,7 @@ import signal
 import subprocess
 import time
 from pathlib import Path
-from .arm64 import ABI, require_arm64
+from .arm64 import ABI, validate_emulation
 from .checksums import file_digest
 
 
@@ -84,7 +84,7 @@ class Device:
 
 
 def verify(sdk, work, manifest, accel='on', boot_timeout=180, port=5580, cold_boot_only=False):
-    require_arm64(manifest['image'])
+    validate_emulation(manifest['image'], accel)
     if platform.system() not in ('Darwin', 'Linux') or platform.machine().lower() not in ('arm64', 'aarch64'):
         raise ValueError('ARM64 boot verification requires a native ARM64 emulator host')
     if accel not in ('on', 'off') or not 60 <= boot_timeout <= 1800 or port % 2 or not 5554 <= port <= 5682:

@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 import zipfile
-from avdlite.arm64 import kernel_info, require_arm64
+from avdlite.arm64 import kernel_info, require_arm64, validate_emulation
 from avdlite.ksu import install
 
 
@@ -16,6 +16,13 @@ def kernel(version='6.12.81-android16-6-gabc'):
 
 
 class Arm64KernelTests(unittest.TestCase):
+    def test_tcg_rejects_16k_before_starting_an_emulator(self):
+        image = {'abi': 'arm64-v8a', 'page_size': '16k'}
+        with self.assertRaisesRegex(ValueError, '16 KB'):
+            validate_emulation(image, 'off')
+        validate_emulation(image, 'on')
+        validate_emulation(dict(image, page_size='4k'), 'off')
+
     def test_raw_and_gzip_images_preserve_kernel_kmi(self):
         with tempfile.TemporaryDirectory() as directory:
             image = Path(directory) / 'kernel-ranchu'

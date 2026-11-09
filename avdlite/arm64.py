@@ -13,6 +13,12 @@ def require_arm64(image):
         raise ValueError('This project requires an official arm64-v8a system image')
 
 
+def validate_emulation(image, accel):
+    require_arm64(image)
+    if accel == 'off' and image.get('page_size') != '4k':
+        raise ValueError('Android Emulator TCG CPU models cannot boot this 16 KB image; use a 4 KB image or --accel on on a virtualization-capable ARM64 host')
+
+
 def kernel_info(path):
     data = Path(path).read_bytes()
     if data.startswith(b'\x1f\x8b'):

@@ -4,7 +4,7 @@ on:
   workflow_call:
     inputs:
       api: {default: latest, type: string}
-      page_size: {default: auto, type: string}
+      page_size: {default: 4k, type: string}
       enable_ksu: {default: true, type: boolean}
   workflow_dispatch:
     inputs:
@@ -14,8 +14,8 @@ on:
         default: latest
         type: string
       page_size:
-        description: "Page size; auto prefers 16 KB on the newest stable API"
-        default: auto
+        description: "Hosted verification requires 4k; 16k candidates need a hardware-accelerated ARM64 host"
+        default: 4k
         type: choice
         options: [auto, 4k, 16k]
       enable_ksu:
@@ -36,7 +36,7 @@ jobs:
     env:
       PYTHONDONTWRITEBYTECODE: "1"
       INPUT_API: ${{ inputs.api || 'latest' }}
-      INPUT_PAGE_SIZE: ${{ inputs.page_size || 'auto' }}
+      INPUT_PAGE_SIZE: ${{ inputs.page_size || '4k' }}
       INPUT_KSU: ${{ inputs.enable_ksu }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

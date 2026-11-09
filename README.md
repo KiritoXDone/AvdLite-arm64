@@ -14,13 +14,15 @@ The Python build tools modify official Google APIs **arm64-v8a** emulator images
 
 ## Build and verification
 
-**Build Latest ARM64** runs on pushes and pull requests. **Build ARM64 Version** accepts a selected API, page size and KernelSU setting.
+**Build Latest ARM64** runs on pushes and pull requests using the latest official **4 KB** ARM64 image. **Build ARM64 Version** accepts a selected API, page size and KernelSU setting.
 
 1. An Ubuntu x86_64 runner downloads and verifies official sources, modifies filesystem copies and patches the ARM64 ramdisk.
 2. The candidate image is transferred to an Apple Silicon runner. The verifier checks the runtime ABI, page size, core packages, SELinux, KernelSU, cold boot and reboot persistence.
 3. Both variants must pass before the workflow publishes release ZIPs. Packaging binds the boot report to the exact system-image SHA-256. Candidate artifacts are not verified releases.
 
-GitHub-hosted Apple Silicon runners do not support nested virtualization, so cloud verification explicitly uses `--accel off`. Its outcome is recorded in `verification.json`; a successful filesystem build alone is not a successful boot. Native ARM64 hosts with available virtualization can run the same verifier using `--accel on`.
+GitHub-hosted Apple Silicon runners do not support nested virtualization. Cloud verification explicitly selects TCG software emulation, with a three-minute boot limit and progress logs every 30 seconds. The Android Emulator 37.2.13 TCG `cortex-a53` and `max` CPU models do not advertise 16 KB translation granules; a 16 KB kernel parks before starting Android. The verifier rejects this combination immediately. A 16 KB candidate requires an ARM64 host with hardware virtualization and `--accel on`.
+
+**Diagnose ARM64 Candidate** reuses an existing build run's candidate for a 90-second cold-boot diagnosis. It does not rebuild images or publish a release. Reports and kernel logs are retained as artifacts. A successful filesystem build alone is not a successful boot.
 
 ## Import a verified image
 

@@ -23,7 +23,7 @@ jobs:
     uses: ./.github/workflows/build-version.yml
     with:
       api: latest
-      page_size: auto
+      page_size: 4k
       enable_ksu: ${{ matrix.ksu }}
 
   release:
