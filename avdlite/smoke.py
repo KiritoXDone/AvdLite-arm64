@@ -11,7 +11,7 @@ import time
 from pathlib import Path
 from .arm64 import ABI, validate_emulation
 from .checksums import file_digest
-from .boot_progress import BootProgress, process_cpu_samples
+from .boot_progress import BootProgress, process_cpu_samples, emulator_cpu_sample
 
 
 def emulator_command(sdk, accel, port):
@@ -79,6 +79,15 @@ class Device:
                         pass
                 progress.android(state, android_log, time.monotonic())
                 progress.cpu(cpu, time.monotonic())
+                if state != 'device' and progress.kernel_line:
+                    try:
+                        listing = subprocess.run(['ps', '-ax', '-o', 'pid=,ppid=,time=,comm='],
+                                                 capture_output=True, text=True, check=True, timeout=5).stdout
+                        host_cpu = emulator_cpu_sample(listing, self.process.pid)
+                        progress.cpu(host_cpu, time.monotonic(), minimum_ticks=100)
+                        cpu.update(host_cpu)
+                    except (subprocess.SubprocessError, OSError):
+                        pass
                 idle = progress.idle_seconds(time.monotonic())
                 last_line = progress.android_line or progress.kernel_line
                 print(f'[waiting] {label}; elapsed={now - started:.0f}s; adb={state}; guest_idle={idle:.0f}s; cpu={cpu}', flush=True)

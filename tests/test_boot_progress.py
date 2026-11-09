@@ -1,5 +1,5 @@
 import unittest
-from avdlite.boot_progress import BootProgress, process_cpu_samples
+from avdlite.boot_progress import BootProgress, process_cpu_samples, emulator_cpu_sample
 
 
 class BootProgressTests(unittest.TestCase):
@@ -42,3 +42,7 @@ class BootProgressTests(unittest.TestCase):
         fields = ['S'] + ['0'] * 10 + ['125', '75'] + ['0'] * 8
         samples = process_cpu_samples('system_server 123 (system server) ' + ' '.join(fields) + '\nzygote64 denied')
         self.assertEqual(samples, {'system_server': (123, 200)})
+
+    def test_host_cpu_only_observes_this_emulators_process_tree(self):
+        listing = '10 1 0:00.01 emulator\n11 10 2:30.50 qemu-system-aarch64-headless\n12 1 9:00.00 qemu-system-aarch64-headless'
+        self.assertEqual(emulator_cpu_sample(listing, 10), {'host_qemu': (11, 15050)})

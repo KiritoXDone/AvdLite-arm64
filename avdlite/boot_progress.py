@@ -45,12 +45,12 @@ class BootProgress:
     def idle_seconds(self, now):
         return max(0, now - self.last_activity)
 
-    def cpu(self, samples, now):
+    def cpu(self, samples, now, minimum_ticks=25):
         for name, (pid, ticks) in samples.items():
             previous = self.process_samples.get(name)
             # Android's /proc stat counters use USER_HZ=100. Require measurable
             # CPU work in the same process, not just another restarted PID.
-            if previous and previous[0] == pid and ticks - previous[1] >= 25:
+            if previous and previous[0] == pid and ticks - previous[1] >= minimum_ticks:
                 self.last_activity = now
             self.process_samples[name] = (pid, ticks)
 
@@ -66,3 +66,26 @@ def process_cpu_samples(output):
         except (ValueError, IndexError):
             continue
     return samples
+
+
+def emulator_cpu_sample(output, parent_pid):
+    rows = []
+    for line in output.splitlines():
+        try:
+            pid, parent, elapsed, command = line.split(None, 3)
+            days, _, elapsed = elapsed.rpartition('-')
+            seconds = 0
+            for part in elapsed.split(':'):
+                seconds = seconds * 60 + float(part)
+            seconds += int(days or 0) * 86400
+            rows.append((int(pid), int(parent), int(seconds * 100), command))
+        except (ValueError, IndexError):
+            continue
+    children = {parent_pid}
+    while True:
+        found = {pid for pid, parent, _, _ in rows if parent in children}
+        if found <= children:
+            break
+        children.update(found)
+    return {'host_qemu': (pid, ticks) for pid, _, ticks, name in rows
+            if pid in children and 'qemu-system-aarch64' in name}
