@@ -1,0 +1,121 @@
+name: Publish ARM64 Candidates
+on:
+  workflow_dispatch:
+    inputs:
+      source_run:
+        description: "Successful ARM64 build run containing both candidates"
+        required: true
+        type: string
+permissions:
+  actions: read
+  contents: read
+jobs:
+  package:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        ksu: [true, false]
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SOURCE_RUN: ${{ inputs.source_run }}
+      KSU: ${{ matrix.ksu }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Verify source build and image-builder revision
+        run: |
+          [[ "$SOURCE_RUN" =~ ^[1-9][0-9]*$ ]]
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN" > "$RUNNER_TEMP/source-run.json"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN/jobs?per_page=100" > "$RUNNER_TEMP/source-jobs.json"
+          python3 - <<'PYCODE'
+          import json, os
+          from pathlib import Path
+          root = Path(os.environ['RUNNER_TEMP'])
+          run = json.loads((root / 'source-run.json').read_text())
+          jobs = json.loads((root / 'source-jobs.json').read_text())['jobs']
+          if (run['event'] != 'push' or run['head_branch'] != 'main' or
+                  run['head_repository']['full_name'] != os.environ['GITHUB_REPOSITORY']):
+              raise SystemExit('Candidate must come from a main-branch push in this repository')
+          suffix = '/ Build ARM64 image (KSU=' + os.environ['KSU'] + ')'
+          matching = [job for job in jobs if job['name'].endswith(suffix)]
+          if len(matching) != 1 or matching[0]['conclusion'] != 'success':
+              raise SystemExit('The selected candidate build did not succeed')
+          (root / 'builder-sha').write_text(run['head_sha'])
+          PYCODE
+          builder_sha="$(cat "$RUNNER_TEMP/builder-sha")"
+          git merge-base --is-ancestor "$builder_sha" "$GITHUB_SHA"
+          git diff --quiet "$builder_sha" "$GITHUB_SHA" -- avdlite/arm64.py avdlite/assemble.py avdlite/build.py avdlite/checksums.py avdlite/customize.py avdlite/ksu.py avdlite/layout.py avdlite/overlays.py avdlite/preflight.py avdlite/sources.py avdlite/tools.py resources/
+      - name: Run packaging contract tests
+        run: python3 -m unittest discover -s tests -v
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.source_run }}
+          name: arm64-candidate-ksu-${{ matrix.ksu }}
+          path: ${{ runner.temp }}/candidate
+      - name: Package the build-only image with explicit status
+        run: |
+          python3 -m avdlite.candidate \
+            --archive "$RUNNER_TEMP/candidate/arm64-candidate.tar.gz" \
+            --checksum "$RUNNER_TEMP/candidate/arm64-candidate.tar.gz.sha256" \
+            --work "$RUNNER_TEMP/avdlite" --build-run "$SOURCE_RUN" --ksu "$KSU"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: unverified-arm64-ksu-${{ matrix.ksu }}
+          path: ${{ runner.temp }}/avdlite/release/
+          compression-level: 0
+          if-no-files-found: error
+
+  release:
+    needs: package
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SOURCE_RUN: ${{ inputs.source_run }}
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: unverified-arm64-ksu-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/release
+      - name: Verify both archives and prepare release notes
+        run: |
+          cd "$RUNNER_TEMP/release"
+          sha256sum --check -- *.sha256
+          python3 - <<'PYCODE'
+          import json, os, pathlib, zipfile
+          root = pathlib.Path('.')
+          archives = sorted(root.glob('Unverified-AvdLiteArm64*.zip'))
+          if len(archives) != 2:
+              raise SystemExit('Expected exactly two unverified image archives')
+          variants, apis = set(), set()
+          for archive in archives:
+              with zipfile.ZipFile(archive) as bundle:
+                  manifest = json.loads(bundle.read('manifest.json'))
+                  verification = json.loads(bundle.read('verification.json'))
+                  if (manifest['image']['abi'] != 'arm64-v8a' or manifest['image']['page_size'] != '4k' or
+                          verification['status'] != 'unverified' or verification['build_run'] != os.environ['SOURCE_RUN']):
+                      raise SystemExit('Archive metadata does not match the requested unverified ARM64 build')
+                  variants.add(bool(manifest['ksu']))
+                  apis.add(manifest['image']['api'])
+          if variants != {False, True} or len(apis) != 1:
+              raise SystemExit('Both KernelSU variants must use the same API level')
+          api = apis.pop()
+          notes = f'''## ARM64 4 KB candidate images\n\nBoth images were built from the official Google APIs ARM64 system image (API {api}). One includes KernelSU; the other does not.\n\n**Status: unverified.** Cold boot, reboot, application execution and KernelSU Root have not been fully validated. These builds are supplied for testing.\n\nBuild provenance: https://github.com/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['SOURCE_RUN']}\n\nExtract either ZIP and run `python3 import-avd.py --sdk /path/to/android-sdk` on an ARM64 emulator host. Each ZIP includes source metadata, a build report, an unverified status record, and checksums. Verify `SHA256SUMS` before importing.\n'''
+          (root / 'notes.md').write_text(notes)
+          PYCODE
+          cat -- *.sha256 > SHA256SUMS
+      - name: Publish two explicitly unverified images
+        env:
+          RELEASE_TAG: unverified-${{ github.run_number }}
+        run: |
+          cd "$RUNNER_TEMP/release"
+          gh release create "$RELEASE_TAG" Unverified-AvdLiteArm64*.zip SHA256SUMS \
+            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease \
+            --title "AvdLite ARM64 4 KB — unverified" --notes-file notes.md

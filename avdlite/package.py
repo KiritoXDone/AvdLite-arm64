@@ -14,15 +14,26 @@ def package(work):
     verification = json.loads((work / 'verification.json').read_text())
     if verification.get('status') != 'passed':
         raise ValueError('Packaging requires passed boot verification')
+    return _bundle(work, verification, unverified=False)
+
+
+def _bundle(work, verification, *, unverified):
+    """Write a bundle after the caller has enforced the appropriate release gate."""
     output = work / 'output'
+    expected = 'unverified' if unverified else 'passed'
+    if verification.get('status') != expected:
+        raise ValueError('Bundle status does not match the selected release gate')
     if verification.get('system_sha256') != file_digest(output / ABI / 'system.img'):
-        raise ValueError('Boot verification does not match the image being packaged')
+        raise ValueError('Candidate system image differs from the build report' if unverified else
+                         'Boot verification does not match the image being packaged')
     project = Path(__file__).resolve().parent.parent
     for name in ('manifest.json', 'build-report.json', 'verification.json'):
         shutil.copyfile(work / name, output / name)
     shutil.copyfile(project / 'avdlite/import_avd.py', output / 'import-avd.py')
     shutil.copyfile(project / 'resources/avd-config.json', output / 'avd-config.json')
-    (output / 'README.md').write_text('# AvdLite ARM64\n\nImport with Python 3.9 or later:\n\n```text\npython import-avd.py --sdk <Android-SDK-directory>\n```\n\nUse an ARM64 Android Emulator host. Use `--avd-home <directory>` and `--name <name>` for an independent AVD. Defaults: 2 CPU cores, 4096 MB RAM, 32 GB storage, Resizable display, and Quick Boot. File checksums are verified before import. See verification.json for the actual boot environment.\n', encoding='utf-8')
+    state = ('**Unverified build:** cold boot, reboot and Root have not been validated.\n\n'
+             if unverified else 'See verification.json for the actual boot environment.\n\n')
+    (output / 'README.md').write_text('# AvdLite ARM64\n\n' + state + 'Import with Python 3.9 or later:\n\n```text\npython import-avd.py --sdk <Android-SDK-directory>\n```\n\nUse an ARM64 Android Emulator host. Use `--avd-home <directory>` and `--name <name>` for an independent AVD. Defaults: 2 CPU cores, 4096 MB RAM, 32 GB storage, Resizable display, and Quick Boot. File checksums are verified before import.\n', encoding='utf-8')
     hashes = []
     for path in sorted(output.rglob('*')):
         if path.is_file() and path.name != 'SHA256SUMS':
@@ -37,7 +48,8 @@ def package(work):
     android_version = properties['ro.build.version.release']
     if not re.fullmatch(r'\d+(?:\.\d+)*', android_version):
         raise ValueError('Packaging requires a stable Android version number: ' + android_version)
-    name = f'{image_name}-Android{android_version}-api{source["api"]}'
+    prefix = 'Unverified-' if unverified else ''
+    name = f'{prefix}{image_name}-Android{android_version}-api{source["api"]}'
     release = work / 'release'
     release.mkdir()
     archive = release / (name + '.zip')

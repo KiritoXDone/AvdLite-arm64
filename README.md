@@ -18,7 +18,9 @@ The Python build tools modify official Google APIs **arm64-v8a** emulator images
 
 1. An Ubuntu x86_64 runner downloads and verifies official sources, modifies filesystem copies and patches the ARM64 ramdisk.
 2. The candidate image is transferred to an Apple Silicon runner. The verifier checks the runtime ABI, page size, core packages, SELinux, KernelSU, cold boot and reboot persistence.
-3. Both variants must pass before the workflow publishes release ZIPs. Packaging binds the boot report to the exact system-image SHA-256. Candidate artifacts are not verified releases.
+3. Both variants must pass before the automatic workflow publishes verified release ZIPs. Packaging binds the boot report to the exact system-image SHA-256.
+
+The manually triggered **Publish ARM64 Candidates** workflow can publish the two build-only images as an explicitly unverified prerelease. It checks the source build, image-builder revision and SHA-256 digests; it does not claim that boot or Root tests passed.
 
 GitHub-hosted Apple Silicon runners do not support nested virtualization. Cloud verification explicitly selects TCG software emulation. Each boot has a 20-minute safety ceiling, a 90-second guest-inactivity limit and progress logs every 30 seconds. Kernel panic fails immediately. Progress requires new boot messages or measurable CPU work in the same framework/compiler process. Before ADB is available, the verifier also checks CPU work in its own QEMU process tree after kernel output has appeared. Renderer log noise, timestamp/PID changes and repeated retries alone do not extend the wait. This permits CPU-bound key generation, certificate scanning and package decompression while still detecting idle guests. The Android Emulator 37.2.13 TCG `cortex-a53` and `max` CPU models do not advertise 16 KB translation granules; a 16 KB kernel parks before starting Android. The verifier rejects this combination immediately. A 16 KB candidate requires an ARM64 host with hardware virtualization and `--accel on`.
 
