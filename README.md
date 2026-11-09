@@ -1,67 +1,56 @@
-# AvdLite
+# AvdLite ARM64
 
-Build lightweight Android emulator images from official Google APIs x86_64 images, starting with Android 15 (API 35).
+ARM64 variant of [Kindness-Kismet/AvdLite](https://github.com/Kindness-Kismet/AvdLite), based on upstream commit `766f1587e17112b59656dc9818df1ed2d3209f42`.
 
-## Image features
+The Python build tools modify official Google APIs **arm64-v8a** emulator images. Two variants are produced: `AvdLiteArm64WithKsu` and `AvdLiteArm64WithoutKsu`. The original ARM64 kernel and upstream build properties are retained.
 
-- Remove optional applications while retaining GMS, WebView, the keyboard, launcher, and system dependencies.
-- Unlock theme and rotation settings while preserving upstream language and time zone defaults.
-- Set left and right status bar padding to 12 dp.
-- Gate UWB and NFC on emulator ports: start services when ports exist and hide feature declarations when ports are absent.
-- Optionally install the latest official stable KernelSU release with a module matching the stock kernel KMI.
-- Check filesystems, rebuild partition metadata, and sign AVB for an independent system image.
+## Images
 
-## Build the latest version
+- Android 15 / API 35 and newer stable official images.
+- Explicit API selection, plus `auto`, `4k`, and `16k` page-size selection.
+- Optional official KernelSU LKM matched to the kernel KMI, with an ARM64 manager daemon and init payload.
+- The upstream debloat list, retained GMS/WebView/keyboard/launcher, theme overlays, hardware-port checks and SELinux Enforcing policy.
+- Independent AVD names, source checksums, image checksums and boot evidence.
 
-Open **Actions → Build Latest → Run workflow**. The workflow queries official sources for the latest stable image and builds `AvdLiteWithKsu` and `AvdLiteWithoutKsu` in parallel. Pushes to the main branch run the same checks.
+## Build and verification
 
-After both variants pass cold boot and reboot verification, the release contains two ZIP files, for example:
+**Build Latest ARM64** runs on pushes and pull requests. **Build ARM64 Version** accepts a selected API, page size and KernelSU setting.
 
-- `AvdLiteWithKsu-Android17-api37.2.zip`
-- `AvdLiteWithoutKsu-Android17-api37.2.zip`
+1. An Ubuntu x86_64 runner downloads and verifies official sources, modifies filesystem copies and patches the ARM64 ramdisk.
+2. The candidate image is transferred to an Apple Silicon runner. The verifier checks the runtime ABI, page size, core packages, SELinux, KernelSU, cold boot and reboot persistence.
+3. Both variants must pass before the workflow publishes release ZIPs. Packaging binds the boot report to the exact system-image SHA-256. Candidate artifacts are not verified releases.
 
-The Android version comes from the official image's `build.prop`; the API version comes from the official repository index.
+GitHub-hosted Apple Silicon runners do not support nested virtualization, so cloud verification explicitly uses `--accel off`. Its outcome is recorded in `verification.json`; a successful filesystem build alone is not a successful boot. Native ARM64 hosts with available virtualization can run the same verifier using `--accel on`.
 
-## Build a specific version
+## Import a verified image
 
-Open **Actions → Build Version → Run workflow** and select:
+Download a ZIP from this repository's Releases and extract it. With Python 3.9 or later:
 
-| Input | Purpose |
-| --- | --- |
-| `api` | `latest` or an API level from `35` onward, such as `35`, `36.1`, or `37.2` |
-| `page_size` | `auto`, `4k`, or `16k`; `auto` prefers 16 KB on the newest stable API |
-| `enable_ksu` | Install the latest official stable KernelSU release resolved during the build |
-
-Images come from the official stable channel. If the requested image or matching KMI module is missing, the workflow stops with the specific reason.
-
-`Build Version` saves image bundles, SHA-256 files, and verification evidence as Actions artifacts. Both workflows share the same build and verification steps. See [Actions](https://github.com/Kindness-Kismet/AvdLite/actions) for results.
-
-## Download and import
-
-Download the latest images from [Release Assets](https://github.com/Kindness-Kismet/AvdLite/releases). Download custom versions from their Actions run artifacts. `AvdLiteWithKsu` includes KernelSU; `AvdLiteWithoutKsu` is the standard lightweight variant. Each ZIP contains a file checksum list, and GitHub provides a digest for each release asset.
-
-Extract the ZIP and import it with Python 3.11 or later:
-
-```text
-python import-avd.py --sdk <Android-SDK-directory> --avd-home <AVD-data-directory>
+```sh
+python3 import-avd.py --sdk /path/to/android-sdk --name AvdLiteArm64
 ```
 
-The importer verifies checksums, installs the system image, and registers an independent AVD. The default AVD name and SDK image directory are `AvdLiteWithKsu` or `AvdLiteWithoutKsu`. Defaults are 2 CPU cores, 4096 MB RAM, 32 GB storage, a Resizable display, and Quick Boot. Use `--name` for a separate instance. Install the current stable Android Emulator in the selected SDK.
+Use an ARM64 Android Emulator host, such as an Apple Silicon Mac. The importer checks the bundle checksums and ABI before creating an independent AVD. It refuses to overwrite an existing AVD or SDK image directory. `--avd-home` selects a separate data directory.
 
-## Remote sources and caching
+Defaults are 2 CPU cores, 4096 MB RAM, 32 GB storage, a Resizable display and Quick Boot. CI uses a smaller disposable data partition and disables snapshots.
 
-Each build queries official Google and KernelSU sources. Cloud runners download the images and dependencies directly from these sources. Google images are verified against the official index checksum, and KernelSU assets use official SHA-256 digests. Cache keys include content digests, and restored files are verified again.
+## Local build
 
-`.cache/` stores downloads; `.work/` stores local research and temporary files. Git tracks reviewed source files, resources, and documentation through an allowlist. Run the privacy check before pushing.
+Image construction requires Linux x86_64, root for mounting private filesystem copies, Android SDK build-tools 35.0.0/platform 35, `e2fsprogs`, `gdisk`, `zerofree`, `lz4`, `cpio`, `curl` and Java. The build does not flash a physical device.
 
-## Debloat rules
+```sh
+python3 -m unittest discover -s tests -v
+python3 -m avdlite.sources resolve --api latest --page-size auto --ksu --manifest .work/manifest.json
+python3 -m avdlite.sources download --manifest .work/manifest.json --cache .cache
+python3 -m avdlite.preflight --archive .cache/image/source.zip --work .work
+sudo python3 -m avdlite.build --manifest .work/manifest.json --cache .cache --work .work --sdk "$ANDROID_HOME"
+```
 
-The [debloat manifest](resources/debloat.json) lists package identities, removal reasons, and retained dependencies. Build reports record actual removals and candidates absent from the selected image.
+Transfer `.work/output`, `.work/manifest.json` and `.work/build-report.json` to an ARM64 emulator host, then run:
 
-Hardware components remain installed. The UWB service starts once when its port property appears. Before the framework scans permissions, init mounts feature declarations that match the current port configuration, including vendor files and NFC APEX declarations. A targeted SELinux rule permits these mounts while retaining Enforcing mode.
+```sh
+python3 -m avdlite.smoke --manifest .work/manifest.json --work .work --sdk "$ANDROID_HOME" --accel on
+python3 -m avdlite.package --work .work
+```
 
-## Verification
-
-Build checks cover official checksums, GPT and dynamic partition metadata, the AVB public key and signature, ext4 filesystems, the original kernel, and upstream `build.prop` files.
-
-Boot checks use an isolated AVD to verify core applications, SELinux Enforcing, hardware declarations, overlays, and KernelSU initialization. A reboot verifies dark theme schedule persistence. Each run saves logs, a screenshot, and JSON reports.
+Build source and the original upstream history are preserved. Google images and KernelSU assets are obtained from their official publishers; no third-party Android image mirrors are used.

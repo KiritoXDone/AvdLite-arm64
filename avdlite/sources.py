@@ -10,13 +10,14 @@ import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 from pathlib import Path
+from .checksums import file_digest
 
 INDEX = 'https://dl.google.com/android/repository/sys-img/google_apis/sys-img2-4.xml'
 KSU = 'https://api.github.com/repos/tiann/KernelSU/releases/latest'
 
 
 def fetch(url):
-    request = urllib.request.Request(url, headers={'User-Agent': 'AvdLite/1.0'})
+    request = urllib.request.Request(url, headers={'User-Agent': 'AvdLite-arm64/1.0'})
     with urllib.request.urlopen(request, timeout=90) as response:
         return response.read()
 
@@ -30,13 +31,16 @@ def select_image(xml, api='latest', page_size='auto'):
     candidates = []
     for package in ET.fromstring(xml).findall('remotePackage'):
         path = package.attrib['path']
-        match = re.fullmatch(r'system-images;android-(\d+(?:\.\d+)?);(google_apis(?:_ps16k)?);x86_64', path)
+        match = re.fullmatch(r'system-images;android-(\d+(?:\.\d+)?);(google_apis(?:_ps16k)?);arm64-v8a', path)
         if not match or package.find('obsolete') is not None:
             continue
         version, tag = match.groups()
         if int(version.split('.')[0]) < 35 or tag not in tags[page_size] or api not in ('latest', version):
             continue
         if package.find('revision/preview') is not None:
+            continue
+        channel = package.find('channelRef')
+        if channel is not None and channel.attrib.get('ref') != 'channel-0':
             continue
         archive = package.find('archives/archive/complete')
         if archive is None:
@@ -45,7 +49,7 @@ def select_image(xml, api='latest', page_size='auto'):
         if checksum is None or checksum.attrib.get('type') not in ('sha1', 'sha256'):
             raise ValueError('Official image is missing a supported checksum')
         revision = '.'.join(package.findtext(f'revision/{name}', '0') for name in ('major', 'minor', 'micro'))
-        item = {'package': path, 'api': version, 'tag': tag, 'abi': 'x86_64', 'revision': revision,
+        item = {'package': path, 'api': version, 'tag': tag, 'abi': 'arm64-v8a', 'revision': revision,
                 'page_size': '16k' if tag.endswith('ps16k') else '4k', 'size': int(archive.findtext('size')),
                 'checksum_type': checksum.attrib['type'], 'checksum': checksum.text,
                 'url': urllib.parse.urljoin(INDEX, archive.findtext('url'))}
@@ -66,28 +70,32 @@ def resolve(api, page_size, enable_ksu):
         for asset in data['assets']:
             name = asset['name']
             if (name == 'ksud-x86_64-unknown-linux-musl' or name.startswith('KernelSU_') and name.endswith('-release.apk')
-                    or name.startswith('lkm-x86_64-') and name.endswith('_kernelsu.ko')):
+                    or name.startswith('lkm-aarch64-') and name.endswith('_kernelsu.ko')):
                 digest = asset.get('digest', '')
                 if not re.fullmatch(r'sha256:[0-9a-f]{64}', digest):
                     raise ValueError(f'KernelSU asset is missing SHA-256: {name}')
-                release['assets'].append({'name': name, 'url': asset['browser_download_url'], 'sha256': digest[7:]})
+                release['assets'].append({'name': name, 'url': asset['url'], 'fallback_url': asset['browser_download_url'], 'sha256': digest[7:]})
         if not any(a['name'] == 'ksud-x86_64-unknown-linux-musl' for a in release['assets']):
             raise ValueError('Latest KernelSU release is missing the Linux x86_64 tool')
     return {'image': image, 'ksu': release}
 
 
-def download(url, path, algorithm, expected):
+def download(url, path, algorithm, expected, fallback_url=None):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     def digest(target):
-        with target.open('rb') as stream:
-            return hashlib.file_digest(stream, algorithm).hexdigest()
+        return file_digest(target, algorithm)
     if path.exists() and digest(path) == expected:
         return path
-    temporary = path.with_suffix(path.suffix + '.partial')
-    subprocess.run(['curl', '--fail', '--location', '--retry', '5', '--retry-all-errors',
-                    '--connect-timeout', '30', '--speed-limit', '1024', '--speed-time', '90',
-                    '--continue-at', '-', '--output', str(temporary), url], check=True)
+    temporary = path.with_suffix(path.suffix + '.' + expected + '.partial')
+    for endpoint in [url] + ([fallback_url] if fallback_url else []):
+        result = subprocess.run(['curl', '--fail', '--location', '--retry', '3', '--retry-all-errors',
+                                 '--connect-timeout', '30', '--max-time', '900', '--speed-limit', '1024', '--speed-time', '90',
+                                 '-H', 'Accept: application/octet-stream', '--continue-at', '-', '--output', str(temporary), endpoint])
+        if result.returncode == 0:
+            break
+    else:
+        raise RuntimeError('All official download endpoints failed: ' + path.name)
     if digest(temporary) != expected:
         raise ValueError(f'Download checksum verification failed: {path.name}')
     temporary.replace(path)
@@ -121,7 +129,7 @@ def main():
         with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
             jobs = [pool.submit(download, image['url'], args.cache / 'image/source.zip', image['checksum_type'], image['checksum'])]
             if manifest['ksu']:
-                jobs.extend(pool.submit(download, asset['url'], args.cache / 'ksu' / asset['name'], 'sha256', asset['sha256']) for asset in manifest['ksu']['assets'])
+                jobs.extend(pool.submit(download, asset['url'], args.cache / 'ksu' / asset['name'], 'sha256', asset['sha256'], asset.get('fallback_url')) for asset in manifest['ksu']['assets'])
             errors = []
             for job in jobs:
                 try:

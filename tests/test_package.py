@@ -11,15 +11,15 @@ class PackageTests(unittest.TestCase):
     def test_archive_contains_importable_config_and_verified_hashes(self):
         with tempfile.TemporaryDirectory() as directory:
             work = Path(directory)
-            (work / 'output/x86_64').mkdir(parents=True)
-            (work / 'output/x86_64/system.img').write_bytes(b'filesystem-fixture')
-            (work / 'output/x86_64/build.prop').write_text('ro.build.version.release=17\n')
-            (work / 'verification.json').write_text('{"status":"passed"}')
-            (work / 'manifest.json').write_text(json.dumps({'image': {'api': '37.2', 'page_size': '16k'}, 'ksu': None}))
+            (work / 'output/arm64-v8a').mkdir(parents=True)
+            (work / 'output/arm64-v8a/system.img').write_bytes(b'filesystem-fixture')
+            (work / 'output/arm64-v8a/build.prop').write_text('ro.build.version.release=17\n')
+            (work / 'verification.json').write_text(json.dumps({'status': 'passed', 'system_sha256': hashlib.sha256(b'filesystem-fixture').hexdigest()}))
+            (work / 'manifest.json').write_text(json.dumps({'image': {'api': '37.2', 'page_size': '16k', 'abi': 'arm64-v8a'}, 'ksu': None}))
             (work / 'build-report.json').write_text('{}')
             package(work)
             archive = next((work / 'release').glob('*.zip'))
-            self.assertEqual(archive.name, 'AvdLiteWithoutKsu-Android17-api37.2.zip')
+            self.assertEqual(archive.name, 'AvdLiteArm64WithoutKsu-Android17-api37.2.zip')
             with zipfile.ZipFile(archive) as content:
                 self.assertIn('import-avd.py', content.namelist())
                 self.assertEqual(json.loads(content.read('avd-config.json'))['hw.ramSize'], '4096')
@@ -37,6 +37,15 @@ class PackageTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'boot verification'):
                 package(work)
             self.assertFalse((work / 'release').exists())
+
+    def test_boot_evidence_cannot_be_reused_for_changed_image(self):
+        with tempfile.TemporaryDirectory() as directory:
+            work = Path(directory)
+            (work / 'output/arm64-v8a').mkdir(parents=True)
+            (work / 'output/arm64-v8a/system.img').write_bytes(b'changed')
+            (work / 'verification.json').write_text(json.dumps({'status': 'passed', 'system_sha256': '0' * 64}))
+            with self.assertRaisesRegex(ValueError, 'does not match'):
+                package(work)
 
 
 if __name__ == '__main__':

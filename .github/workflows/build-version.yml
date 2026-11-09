@@ -1,21 +1,15 @@
-name: Build Version
+name: Build ARM64 Version
 
 on:
   workflow_call:
     inputs:
-      api:
-        default: latest
-        type: string
-      page_size:
-        default: auto
-        type: string
-      enable_ksu:
-        default: true
-        type: boolean
+      api: {default: latest, type: string}
+      page_size: {default: auto, type: string}
+      enable_ksu: {default: true, type: boolean}
   workflow_dispatch:
     inputs:
       api:
-        description: "Google image API: latest or 35 and above, such as 35, 36.1, or 37.2"
+        description: "Official ARM64 image API: latest or 35 and above"
         required: true
         default: latest
         type: string
@@ -25,19 +19,18 @@ on:
         type: choice
         options: [auto, 4k, 16k]
       enable_ksu:
-        description: "Enable the latest official stable KernelSU release"
+        description: "Install the latest stable official ARM64 KernelSU module"
         default: true
         type: boolean
 permissions:
   contents: read
-
 defaults:
   run:
     shell: bash
 
 jobs:
   build:
-    name: Build and boot verification (KSU=${{ inputs.enable_ksu }})
+    name: Build ARM64 image (KSU=${{ inputs.enable_ksu }})
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     env:
@@ -47,64 +40,103 @@ jobs:
       INPUT_KSU: ${{ inputs.enable_ksu }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Check source files
+      - name: Check contracts and tracked files
         run: |
           python3 -m avdlite.privacy
           python3 -m unittest discover -s tests -v
-      - name: Resolve official versions
+      - name: Resolve official ARM64 image and KernelSU
         id: resolve
         run: |
           ksu_args=()
           if [[ "$INPUT_KSU" == true ]]; then ksu_args+=(--ksu); fi
           python3 -m avdlite.sources resolve --api "$INPUT_API" --page-size "$INPUT_PAGE_SIZE" "${ksu_args[@]}" --manifest "$RUNNER_TEMP/avdlite/manifest.json"
-      - name: Cache official image
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .cache/image
-          key: image-v1-${{ steps.resolve.outputs.image_key }}
-      - name: Cache KernelSU release
+          key: arm64-image-v1-${{ steps.resolve.outputs.image_key }}
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         if: env.INPUT_KSU == 'true'
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .cache/ksu
-          key: ksu-v1-${{ steps.resolve.outputs.ksu_key }}
-      - name: Download and verify cached files
+          key: arm64-ksu-v1-${{ steps.resolve.outputs.ksu_key }}
+      - name: Download and verify official files
         run: python3 -m avdlite.sources download --manifest "$RUNNER_TEMP/avdlite/manifest.json" --cache "$GITHUB_WORKSPACE/.cache"
-      - name: Install build and emulator tools
+      - name: Install image build tools
         run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android/sdk/ndk
           sudo apt-get update -qq
-          sudo apt-get install -y e2fsprogs gdisk zerofree lz4 cpio unzip libpulse0 libnss3 libxkbcommon0
-          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "build-tools;35.0.0" "platforms;android-35" "platform-tools" "emulator"
-          sudo chmod a+rw /dev/kvm
-          df -h "$RUNNER_TEMP"
-      - name: Inspect image partitions
+          sudo apt-get install -y e2fsprogs gdisk zerofree lz4 cpio unzip
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "build-tools;35.0.0" "platforms;android-35"
+      - name: Inspect ARM64 partitions and ABI
         run: python3 -m avdlite.preflight --archive "$GITHUB_WORKSPACE/.cache/image/source.zip" --work "$RUNNER_TEMP/avdlite"
-      - name: Debloat and build image
+      - name: Build filesystem and ARM64 ramdisk
         run: |
           sudo env PYTHONDONTWRITEBYTECODE=1 python3 -m avdlite.build --manifest "$RUNNER_TEMP/avdlite/manifest.json" --cache "$GITHUB_WORKSPACE/.cache" --work "$RUNNER_TEMP/avdlite" --sdk "$ANDROID_HOME"
           sudo chown -R "$(id -u):$(id -g)" "$RUNNER_TEMP/avdlite"
-      - name: Verify cold boot and reboot
-        run: python3 -m avdlite.smoke --manifest "$RUNNER_TEMP/avdlite/manifest.json" --work "$RUNNER_TEMP/avdlite" --sdk "$ANDROID_HOME"
-      - name: Package verified image
-        run: python3 -m avdlite.package --work "$RUNNER_TEMP/avdlite"
-      - name: Upload image bundle
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      - name: Stage candidate for ARM64 boot verification
+        run: |
+          tar -czf "$RUNNER_TEMP/arm64-candidate.tar.gz" -C "$RUNNER_TEMP/avdlite" output manifest.json build-report.json preflight.json
+          cd "$RUNNER_TEMP"
+          sha256sum arm64-candidate.tar.gz > arm64-candidate.tar.gz.sha256
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: AvdLite-api-${{ steps.resolve.outputs.api }}-${{ steps.resolve.outputs.page_size }}-ksu-${{ inputs.enable_ksu }}
-          path: ${{ runner.temp }}/avdlite/release/
+          name: arm64-candidate-ksu-${{ inputs.enable_ksu }}
+          path: ${{ runner.temp }}/arm64-candidate.tar.gz*
           compression-level: 0
           if-no-files-found: error
-          retention-days: 7
-      - name: Upload verification evidence
+          retention-days: 3
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: evidence-ksu-${{ inputs.enable_ksu }}
+          name: arm64-build-evidence-ksu-${{ inputs.enable_ksu }}
           path: |
             ${{ runner.temp }}/avdlite/manifest.json
             ${{ runner.temp }}/avdlite/preflight.json
             ${{ runner.temp }}/avdlite/build-report.json
+          if-no-files-found: warn
+
+  verify:
+    name: ARM64 cold boot and reboot (KSU=${{ inputs.enable_ksu }})
+    needs: build
+    runs-on: macos-15
+    timeout-minutes: 65
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: arm64-candidate-ksu-${{ inputs.enable_ksu }}
+          path: ${{ runner.temp }}/candidate
+      - name: Verify candidate checksum and host architecture
+        run: |
+          test "$(uname -m)" = arm64
+          cd "$RUNNER_TEMP/candidate"
+          shasum -a 256 -c arm64-candidate.tar.gz.sha256
+          mkdir -p "$RUNNER_TEMP/avdlite"
+          tar -xzf arm64-candidate.tar.gz -C "$RUNNER_TEMP/avdlite"
+          rm arm64-candidate.tar.gz
+      - name: Install the native Apple Silicon emulator
+        run: |
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" platform-tools emulator
+          "$ANDROID_HOME/emulator/emulator" -version
+      - name: Verify ARM64 cold boot, Root, SELinux and reboot
+        run: python3 -m avdlite.smoke --manifest "$RUNNER_TEMP/avdlite/manifest.json" --work "$RUNNER_TEMP/avdlite" --sdk "$ANDROID_HOME" --accel off --boot-timeout 1200
+      - name: Package only the boot-verified image
+        run: python3 -m avdlite.package --work "$RUNNER_TEMP/avdlite"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: AvdLiteArm64-ksu-${{ inputs.enable_ksu }}
+          path: ${{ runner.temp }}/avdlite/release/
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: arm64-boot-evidence-ksu-${{ inputs.enable_ksu }}
+          path: |
+            ${{ runner.temp }}/avdlite/manifest.json
             ${{ runner.temp }}/avdlite/verification.json
             ${{ runner.temp }}/avdlite/evidence/
           if-no-files-found: warn
-          retention-days: 7

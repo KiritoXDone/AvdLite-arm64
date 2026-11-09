@@ -1,14 +1,8 @@
-Both images passed cold boot, reboot, and settings persistence checks in this Actions run.
+Both ARM64 variants passed cold boot, reboot, runtime ABI/page-size, core-package, SELinux and settings checks. The KernelSU variant also passed Root and manager-installation checks.
 
-- `AvdLiteWithKsu-Android<version>-api<API>.zip`: includes the latest official stable KernelSU release resolved during the build, matched to the stock kernel KMI.
-- `AvdLiteWithoutKsu-Android<version>-api<API>.zip`: the standard lightweight image.
+- `AvdLiteArm64WithKsu-Android<version>-api<API>.zip`
+- `AvdLiteArm64WithoutKsu-Android<version>-api<API>.zip`
 
-Images and dependencies come directly from official remote sources. Each ZIP includes the system image, a 2-core / 4096 MB RAM / 32 GB / Resizable AVD template, an importer, file SHA-256 checksums, and build verification reports. Use the release asset digest to verify the ZIP.
+Each ZIP includes source metadata, build and boot reports, file SHA-256 checksums, an ARM64 AVD template and a standalone importer. Consult `verification.json` for the exact host and acceleration mode used.
 
-Extract the archive and run with Python 3.11 or later:
-
-```text
-python import-avd.py --sdk <Android-SDK-directory>
-```
-
-The default AVD name is `AvdLiteWithKsu` or `AvdLiteWithoutKsu`. Use `--avd-home <directory>` to select the AVD data directory and `--name <name>` for an independent instance. The included JSON reports record versions, actual removals, and verification results.
+Extract the ZIP and run `python3 import-avd.py --sdk /path/to/android-sdk` on an ARM64 emulator host. Python 3.9 or later is required. The importer refuses to overwrite existing AVDs.

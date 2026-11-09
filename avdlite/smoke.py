@@ -2,22 +2,27 @@
 import argparse
 import json
 import os
+import platform
 import re
 import shlex
 import subprocess
 import time
 from pathlib import Path
+from .arm64 import ABI, require_arm64
+from .checksums import file_digest
 
 
 class Device:
-    def __init__(self, sdk, evidence, env):
+    def __init__(self, sdk, evidence, env, timeout=420, port=5580):
         self.adb = str(sdk / 'platform-tools/adb')
         self.evidence = evidence
         self.env = env
         self.process = None
+        self.timeout = timeout
+        self.serial = f'emulator-{port}'
 
     def call(self, *args, check=True, timeout=30):
-        result = subprocess.run([self.adb, '-s', 'emulator-5554', *args], capture_output=True, text=True, timeout=timeout, env=self.env)
+        result = subprocess.run([self.adb, '-s', self.serial, *args], capture_output=True, text=True, timeout=timeout, env=self.env)
         if check and result.returncode:
             raise RuntimeError(result.stderr + result.stdout)
         return result.stdout.strip()
@@ -36,7 +41,7 @@ class Device:
         raise TimeoutError(description)
 
     def ready(self):
-        self.wait(lambda: self.shell('getprop', 'sys.boot_completed', check=False) == '1', 'Timed out waiting for Android boot')
+        self.wait(lambda: self.shell('getprop', 'sys.boot_completed', check=False) == '1', 'Timed out waiting for Android boot', timeout=self.timeout)
         self.wait(lambda: 'package:' in self.shell('pm', 'path', 'com.android.systemui', check=False), 'Timed out waiting for the package manager')
 
     def capture(self, name, *args):
@@ -45,32 +50,47 @@ class Device:
         return text
 
 
-def verify(sdk, work, manifest):
+def verify(sdk, work, manifest, accel='on', boot_timeout=420, port=5580):
+    require_arm64(manifest['image'])
+    if platform.machine().lower() not in ('arm64', 'aarch64'):
+        raise ValueError('ARM64 boot verification requires a native ARM64 emulator host')
+    if accel not in ('on', 'off') or not 60 <= boot_timeout <= 1800 or port % 2 or not 5554 <= port <= 5682:
+        raise ValueError('Invalid emulator acceleration, timeout, or console port')
     sdk, work = sdk.resolve(), work.resolve()
-    image = work / 'output/x86_64'
+    image = work / 'output' / ABI
     evidence = work / 'evidence'
     evidence.mkdir()
     avds = work / 'avds'
-    avd = avds / 'AvdLiteCI.avd'
+    avd = avds / 'AvdLiteArm64CI.avd'
     avd.mkdir(parents=True)
-    (avds / 'AvdLiteCI.ini').write_text(f'avd.ini.encoding=UTF-8\npath={avd}\ntarget=android-{manifest["image"]["api"]}\n')
+    (avds / 'AvdLiteArm64CI.ini').write_text(f'avd.ini.encoding=UTF-8\npath={avd}\ntarget=android-{manifest["image"]["api"]}\n')
     values = json.loads((Path(__file__).resolve().parent.parent / 'resources/avd-config.json').read_text())
-    values.update({'AvdId': 'AvdLiteCI', 'avd.ini.displayname': 'AvdLiteCI', 'image.sysdir.1': str(image) + '/',
-                   'hw.gpu.mode': 'swiftshader_indirect', 'fastboot.forceColdBoot': 'yes', 'fastboot.forceFastBoot': 'no'})
+    values.update({'AvdId': 'AvdLiteArm64CI', 'avd.ini.displayname': 'AvdLiteArm64CI', 'image.sysdir.1': str(image) + '/',
+                   'hw.gpu.mode': 'swiftshader_indirect', 'hw.ramSize': '2048', 'disk.dataPartition.size': '8G',
+                   'fastboot.forceColdBoot': 'yes', 'fastboot.forceFastBoot': 'no'})
     (avd / 'config.ini').write_text(''.join(f'{k}={v}\n' for k, v in values.items()))
     emulator_home = work / 'emulator-home'
     emulator_home.mkdir()
     env = dict(os.environ, ANDROID_AVD_HOME=str(avds), ANDROID_EMULATOR_HOME=str(emulator_home),
                ANDROID_USER_HOME=str(emulator_home), QT_QPA_PLATFORM='offscreen')
-    device = Device(sdk, evidence, env)
+    device = Device(sdk, evidence, env, timeout=boot_timeout, port=port)
     subprocess.run([device.adb, 'start-server'], check=True, env=env)
-    report = {'ksu_enabled': bool(manifest['ksu']), 'checks': {}}
+    report = {'ksu_enabled': bool(manifest['ksu']), 'checks': {}, 'acceleration': accel,
+              'host': {'os': platform.system(), 'arch': platform.machine()}, 'system_sha256': file_digest(image / 'system.img')}
     try:
         with (evidence / 'emulator.log').open('w') as log:
-            command = [str(sdk / 'emulator/emulator'), '-avd', 'AvdLiteCI', '-port', '5554', '-no-window', '-no-audio',
-                       '-no-boot-anim', '-no-snapshot', '-no-metrics', '-gpu', 'swiftshader_indirect', '-feature', '-Vulkan', '-accel', 'on', '-verbose']
+            command = [str(sdk / 'emulator/emulator'), '-avd', 'AvdLiteArm64CI', '-port', str(port), '-no-window', '-no-audio',
+                       '-no-boot-anim', '-no-snapshot', '-no-metrics', '-gpu', 'swiftshader_indirect', '-feature', '-Vulkan', '-accel', accel, '-verbose']
             device.process = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT, env=env)
             device.ready()
+            report['checks']['abi'] = device.shell('getprop', 'ro.product.cpu.abi')
+            report['checks']['machine'] = device.shell('/system/bin/toybox', 'uname', '-m')
+            report['checks']['page_size'] = int(device.shell('getconf', 'PAGESIZE'))
+            if report['checks']['abi'] != ABI or report['checks']['machine'] != 'aarch64':
+                raise AssertionError('Runtime is not ARM64')
+            expected_page = 16384 if manifest['image']['page_size'] == '16k' else 4096
+            if report['checks']['page_size'] != expected_page:
+                raise AssertionError('Runtime page size differs from the official image selection')
             for package in ('com.google.android.gms', 'com.google.android.gsf', 'com.google.android.apps.nexuslauncher', 'com.google.android.inputmethod.latin'):
                 if 'package:' not in device.shell('pm', 'path', package):
                     raise AssertionError('Core application verification failed: ' + package)
@@ -125,7 +145,7 @@ def verify(sdk, work, manifest):
             if not match:
                 raise AssertionError('Display ID query returned no display for the screenshot')
             with (evidence / 'screen.png').open('wb') as screenshot:
-                subprocess.run([device.adb, '-s', 'emulator-5554', 'exec-out', 'screencap', '-d', match[1], '-p'], stdout=screenshot, check=True, timeout=30, env=env)
+                subprocess.run([device.adb, '-s', device.serial, 'exec-out', 'screencap', '-d', match[1], '-p'], stdout=screenshot, check=True, timeout=30, env=env)
             device.capture('uimode.txt', 'dumpsys', 'uimode')
             device.capture('overlays.txt', 'cmd', 'overlay', 'list')
             report['status'] = 'passed'
@@ -134,13 +154,19 @@ def verify(sdk, work, manifest):
         raise
     finally:
         if device.process is not None:
-            device.capture('logcat.txt', 'logcat', '-d', '-b', 'all')
-            device.capture('properties.txt', 'getprop')
-            device.call('emu', 'kill', check=False)
+            for filename, arguments in [('logcat.txt', ('logcat', '-d', '-b', 'all')), ('properties.txt', ('getprop',))]:
+                try:
+                    device.capture(filename, *arguments)
+                except (OSError, subprocess.TimeoutExpired) as error:
+                    report.setdefault('cleanup_errors', []).append(str(error))
+            try:
+                device.call('emu', 'kill', check=False)
+            except (OSError, subprocess.TimeoutExpired) as error:
+                report.setdefault('cleanup_errors', []).append(str(error))
             try:
                 device.process.wait(timeout=20)
             except subprocess.TimeoutExpired:
-                device.process.terminate()
+                device.process.kill()
                 device.process.wait(timeout=10)
         (work / 'verification.json').write_text(json.dumps(report, indent=2, ensure_ascii=False) + '\n')
     print(json.dumps(report, indent=2, ensure_ascii=False))
@@ -150,5 +176,8 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     for name in ('sdk', 'work', 'manifest'):
         parser.add_argument('--' + name, type=Path, required=True)
+    parser.add_argument('--accel', choices=('on', 'off'), default='on')
+    parser.add_argument('--boot-timeout', type=int, default=420)
+    parser.add_argument('--port', type=int, default=5580)
     args = parser.parse_args()
-    verify(args.sdk, args.work, json.loads(args.manifest.read_text()))
+    verify(args.sdk, args.work, json.loads(args.manifest.read_text()), args.accel, args.boot_timeout, args.port)

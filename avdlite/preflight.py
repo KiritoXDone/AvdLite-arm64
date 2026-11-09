@@ -37,6 +37,8 @@ def inspect(root):
     data['build'] = {k: v for k, v in (line.split('=', 1) for line in prop.splitlines() if '=' in line)
                      if k in ('ro.build.version.sdk', 'ro.build.version.sdk_full', 'ro.build.version.incremental', 'ro.product.cpu.abi')}
     data['kernel_bytes'] = (Path(root) / 'kernel-ranchu').stat().st_size
+    if data['build'].get('ro.product.cpu.abi') != 'arm64-v8a':
+        raise ValueError('Preflight requires an ARM64 image; source ABI differs')
     if any(part['filesystem'] == 'unknown' for part in data['partitions']):
         raise ValueError('Supported partition filesystems are ext4 and EROFS')
     return data

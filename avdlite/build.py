@@ -5,6 +5,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import platform
 import re
 import shutil
 import struct
@@ -13,6 +14,8 @@ import sys
 from pathlib import Path
 from . import assemble, customize, ksu, overlays, tools
 from .layout import partitions, read_at, transfer
+from .arm64 import ABI, require_arm64, kernel_info
+from .checksums import file_digest
 
 
 def run(*args, allowed=(0,)):
@@ -23,8 +26,7 @@ def run(*args, allowed=(0,)):
 
 
 def sha256(path):
-    with Path(path).open('rb') as stream:
-        return hashlib.file_digest(stream, 'sha256').hexdigest()
+    return file_digest(path)
 
 
 def sign_vbmeta(source, layout, work, avb):
@@ -68,6 +70,9 @@ def mounted(image, folder):
 
 
 def build(manifest, cache, work, sdk):
+    require_arm64(manifest['image'])
+    if platform.system() != 'Linux' or platform.machine() != 'x86_64':
+        raise ValueError('Image construction requires a Linux x86_64 build host')
     if os.geteuid() != 0:
         raise ValueError('Building requires root to mount filesystem copies')
     roots = list((work / 'source').rglob('system.img'))
@@ -76,7 +81,7 @@ def build(manifest, cache, work, sdk):
     root = roots[0].parent
     original = root / 'system.img'
     layout = partitions(original)
-    output = work / 'output/x86_64'
+    output = work / 'output' / ABI
     output.mkdir(parents=True)
     for path in root.iterdir():
         if path.is_file() and path.name not in ('system.img', 'package.xml'):
@@ -84,6 +89,7 @@ def build(manifest, cache, work, sdk):
         elif path.name == 'data' and path.is_dir():
             shutil.copytree(path, output / 'data')
     kernel_hash = sha256(root / 'kernel-ranchu')
+    original_kernel, _ = kernel_info(root / 'kernel-ranchu')
     avb = tools.prepare(work)
     vbmeta = sign_vbmeta(original, layout, work, avb)
     files, trees, before = {}, {}, {}
@@ -133,12 +139,13 @@ def build(manifest, cache, work, sdk):
     digest = hashlib.sha256(vb[:meaningful]).hexdigest()
     (output / 'VerifiedBootParams.textproto').write_text(f'major_version: 2\nparam: "androidboot.vbmeta.size={meaningful}"\nparam: "androidboot.vbmeta.hash_alg=sha256"\nparam: "androidboot.vbmeta.digest={digest}"\n')
     props = (output / 'source.properties').read_text()
-    image_name = 'AvdLiteWithKsu' if manifest['ksu'] else 'AvdLiteWithoutKsu'
-    props = re.sub(r'^Pkg.Desc=.*$', f'Pkg.Desc={image_name} Google APIs x86_64', props, flags=re.MULTILINE)
+    image_name = 'AvdLiteArm64WithKsu' if manifest['ksu'] else 'AvdLiteArm64WithoutKsu'
+    props = re.sub(r'^Pkg.Desc=.*$', f'Pkg.Desc={image_name} Google APIs ARM64', props, flags=re.MULTILINE)
     (output / 'source.properties').write_text(props)
     if sha256(output / 'kernel-ranchu') != kernel_hash:
         raise ValueError('Original kernel changed unexpectedly')
     report['kernel_sha256'] = kernel_hash
+    report['kernel_version'] = original_kernel
     report['original_bytes'] = original.stat().st_size
     report['system_sha256'] = sha256(output / 'system.img')
     (work / 'build-report.json').write_text(json.dumps(report, indent=2, ensure_ascii=False) + '\n')

@@ -2,7 +2,7 @@
 set -eu
 
 # KernelSU recognizes the manager from the data partition; check its location on each boot.
-BUNDLED=/product/app/KernelSU/lib/x86_64/libksud.so
+BUNDLED=/product/app/KernelSU/lib/arm64/libksud.so
 if [ ! -x /data/adb/ksud ]; then
     "$BUNDLED" install
 fi

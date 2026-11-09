@@ -12,15 +12,15 @@ class ImportTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             bundle, sdk, avds = root / 'bundle', root / 'sdk', root / 'avds'
-            (bundle / 'x86_64').mkdir(parents=True)
+            (bundle / 'arm64-v8a').mkdir(parents=True)
             (sdk / 'emulator').mkdir(parents=True)
             (sdk / 'emulator' / ('emulator.exe' if os.name == 'nt' else 'emulator')).touch()
-            (bundle / 'manifest.json').write_text(json.dumps({'image': {'api': '37.2', 'page_size': '16k'}, 'ksu': None}))
-            (bundle / 'avd-config.json').write_text('{"hw.cpu.ncore":"2"}')
-            image = bundle / 'x86_64/system.img'
+            (bundle / 'manifest.json').write_text(json.dumps({'image': {'api': '37.2', 'page_size': '16k', 'abi': 'arm64-v8a'}, 'ksu': None}))
+            (bundle / 'avd-config.json').write_text('{"hw.cpu.ncore":"2","abi.type":"arm64-v8a","hw.cpu.arch":"arm64"}')
+            image = bundle / 'arm64-v8a/system.img'
             image.write_bytes(b'example-image')
             digest = hashlib.sha256(image.read_bytes()).hexdigest()
-            (bundle / 'SHA256SUMS').write_text(digest + '  x86_64/system.img\n')
+            (bundle / 'SHA256SUMS').write_text(digest + '  arm64-v8a/system.img\n')
             image.write_bytes(b'corrupted')
             with self.assertRaisesRegex(ValueError, 'checksum'):
                 install(bundle, sdk, avds, 'check')
