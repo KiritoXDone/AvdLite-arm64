@@ -20,9 +20,9 @@ The Python build tools modify official Google APIs **arm64-v8a** emulator images
 2. The candidate image is transferred to an Apple Silicon runner. The verifier checks the runtime ABI, page size, core packages, SELinux, KernelSU, cold boot and reboot persistence.
 3. Both variants must pass before the workflow publishes release ZIPs. Packaging binds the boot report to the exact system-image SHA-256. Candidate artifacts are not verified releases.
 
-GitHub-hosted Apple Silicon runners do not support nested virtualization. Cloud verification explicitly selects TCG software emulation, with a three-minute boot limit and progress logs every 30 seconds. The Android Emulator 37.2.13 TCG `cortex-a53` and `max` CPU models do not advertise 16 KB translation granules; a 16 KB kernel parks before starting Android. The verifier rejects this combination immediately. A 16 KB candidate requires an ARM64 host with hardware virtualization and `--accel on`.
+GitHub-hosted Apple Silicon runners do not support nested virtualization. Cloud verification explicitly selects TCG software emulation. Each boot has a ten-minute hard limit, a 90-second guest-inactivity limit and progress logs every 30 seconds. Kernel panic fails immediately; host renderer messages do not count as guest progress. The Android Emulator 37.2.13 TCG `cortex-a53` and `max` CPU models do not advertise 16 KB translation granules; a 16 KB kernel parks before starting Android. The verifier rejects this combination immediately. A 16 KB candidate requires an ARM64 host with hardware virtualization and `--accel on`.
 
-**Diagnose ARM64 Candidate** reuses an existing build run's candidate for a 90-second cold-boot diagnosis. It does not rebuild images or publish a release. Reports and kernel logs are retained as artifacts. A successful filesystem build alone is not a successful boot.
+**Diagnose ARM64 Candidate** reuses an existing build run's candidate. `diagnose` performs a 90-second cold-boot probe; `verify` runs the full checks and packages a ZIP only after cold boot and reboot pass. It does not rebuild images or publish a release. Reports and kernel logs are retained as artifacts. A successful filesystem build alone is not a successful boot.
 
 ## Import a verified image
 

@@ -11,6 +11,7 @@ import time
 from pathlib import Path
 from .arm64 import ABI, validate_emulation
 from .checksums import file_digest
+from .boot_progress import BootProgress
 
 
 def emulator_command(sdk, accel, port):
@@ -45,6 +46,7 @@ class Device:
     def wait(self, probe, description, timeout=420):
         started = time.monotonic()
         deadline, next_report = started + timeout, started
+        progress = BootProgress(started)
         label = description.removeprefix('Timed out waiting for ')
         print(f'[wait] {label}; timeout={timeout}s', flush=True)
         while time.monotonic() < deadline:
@@ -56,6 +58,7 @@ class Device:
                 tail = stream.read().decode(errors='replace')
             if 'Kernel panic - not syncing:' in tail:
                 raise RuntimeError('Guest kernel panic; see evidence/emulator.log')
+            progress.kernel(tail, time.monotonic())
             if probe():
                 print(f'[ready] {label}; elapsed={time.monotonic() - started:.0f}s', flush=True)
                 return
@@ -65,11 +68,21 @@ class Device:
                     state = self.call('get-state', check=False, timeout=5) or 'unavailable'
                 except subprocess.TimeoutExpired:
                     state = 'adb-timeout'
-                print(f'[waiting] {label}; elapsed={now - started:.0f}s; adb={state}', flush=True)
-                last_line = next((line for line in reversed(tail.splitlines()) if line.strip()), '')
-                print(f'[emulator] {last_line[:300]}', flush=True)
-                (self.evidence / 'progress.json').write_text(json.dumps({'stage': label, 'elapsed_seconds': int(now - started), 'adb': state, 'last_emulator_line': last_line}) + '\n')
+                android_log = ''
+                if state == 'device':
+                    try:
+                        android_log = self.shell('logcat', '-d', '-t', '1', check=False, timeout=5)
+                    except subprocess.TimeoutExpired:
+                        pass
+                progress.android(state, android_log, time.monotonic())
+                idle = progress.idle_seconds(time.monotonic())
+                last_line = progress.android_line or progress.kernel_line
+                print(f'[waiting] {label}; elapsed={now - started:.0f}s; adb={state}; guest_idle={idle:.0f}s', flush=True)
+                print(f'[guest] {last_line[:300]}', flush=True)
+                (self.evidence / 'progress.json').write_text(json.dumps({'stage': label, 'elapsed_seconds': int(now - started), 'adb': state, 'guest_idle_seconds': int(idle), 'last_guest_line': last_line}) + '\n')
                 next_report = now + 30
+            if progress.idle_seconds(time.monotonic()) >= 90:
+                raise TimeoutError(f'Guest made no progress for 90 seconds while waiting for {label}')
             time.sleep(3)
         raise TimeoutError(description)
 
@@ -83,7 +96,7 @@ class Device:
         return text
 
 
-def verify(sdk, work, manifest, accel='on', boot_timeout=180, port=5580, cold_boot_only=False):
+def verify(sdk, work, manifest, accel='on', boot_timeout=600, port=5580, cold_boot_only=False):
     validate_emulation(manifest['image'], accel)
     if platform.system() not in ('Darwin', 'Linux') or platform.machine().lower() not in ('arm64', 'aarch64'):
         raise ValueError('ARM64 boot verification requires a native ARM64 emulator host')
@@ -219,7 +232,7 @@ if __name__ == '__main__':
     for name in ('sdk', 'work', 'manifest'):
         parser.add_argument('--' + name, type=Path, required=True)
     parser.add_argument('--accel', choices=('on', 'off'), default='on')
-    parser.add_argument('--boot-timeout', type=int, default=180)
+    parser.add_argument('--boot-timeout', type=int, default=600)
     parser.add_argument('--port', type=int, default=5580)
     parser.add_argument('--cold-boot-only', action='store_true')
     args = parser.parse_args()

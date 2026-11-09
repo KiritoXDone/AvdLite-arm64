@@ -10,13 +10,18 @@ on:
         description: "Select the KernelSU candidate"
         default: false
         type: boolean
+      mode:
+        description: "Quick diagnosis or full cold-boot/reboot verification"
+        default: diagnose
+        type: choice
+        options: [diagnose, verify]
 permissions:
   actions: read
   contents: read
 jobs:
   diagnose:
     runs-on: macos-15
-    timeout-minutes: 12
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -34,11 +39,26 @@ jobs:
           rm arm64-candidate.tar.gz
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" emulator platform-tools
       - name: Bounded kernel and ADB diagnosis
-        run: python3 -m avdlite.smoke --manifest "$RUNNER_TEMP/avdlite/manifest.json" --work "$RUNNER_TEMP/avdlite" --sdk "$ANDROID_HOME" --accel off --boot-timeout 90 --cold-boot-only
+        env:
+          MODE: ${{ inputs.mode }}
+        run: |
+          args=(--boot-timeout 90 --cold-boot-only)
+          if [[ "$MODE" == verify ]]; then args=(--boot-timeout 600); fi
+          python3 -m avdlite.smoke --manifest "$RUNNER_TEMP/avdlite/manifest.json" --work "$RUNNER_TEMP/avdlite" --sdk "$ANDROID_HOME" --accel off "${args[@]}"
+      - name: Package a fully verified image
+        if: inputs.mode == 'verify'
+        run: python3 -m avdlite.package --work "$RUNNER_TEMP/avdlite"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: inputs.mode == 'verify'
+        with:
+          name: AvdLiteArm64-ksu-${{ inputs.enable_ksu }}
+          path: ${{ runner.temp }}/avdlite/release/
+          compression-level: 0
+          if-no-files-found: error
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
-          name: arm64-diagnostic
+          name: arm64-diagnostic-ksu-${{ inputs.enable_ksu }}
           path: |
             ${{ runner.temp }}/avdlite/verification.json
             ${{ runner.temp }}/avdlite/evidence/
