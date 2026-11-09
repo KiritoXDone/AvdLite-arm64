@@ -5,6 +5,7 @@ import os
 import platform
 import re
 import shlex
+import signal
 import subprocess
 import time
 from pathlib import Path
@@ -14,12 +15,12 @@ from .checksums import file_digest
 
 def emulator_command(sdk, accel, port):
     command = [str(sdk / 'emulator/emulator'), '-avd', 'AvdLiteArm64CI', '-port', str(port), '-no-window', '-no-audio',
-               '-no-boot-anim', '-no-snapshot', '-no-metrics', '-memory', '2048', '-gpu', 'swiftshader_indirect',
+               '-no-boot-anim', '-no-snapshot', '-no-metrics', '-show-kernel', '-memory', '2048', '-gpu', 'swiftshader_indirect',
                '-feature', '-Vulkan,-HVF' if accel == 'off' else '-Vulkan', '-accel', accel, '-verbose']
     if accel == 'off':
         # The ARM64 launcher can still inject -enable-hvf after -accel off.
         # QEMU's final machine option explicitly selects its software backend.
-        command += ['-qemu', '-machine', 'accel=tcg']
+        command += ['-qemu', '-machine', 'accel=tcg', '-cpu', 'max']
     return command
 
 
@@ -42,12 +43,33 @@ class Device:
         return self.call('shell', shlex.join(args), **kwargs)
 
     def wait(self, probe, description, timeout=420):
-        deadline = time.monotonic() + timeout
+        started = time.monotonic()
+        deadline, next_report = started + timeout, started
+        label = description.removeprefix('Timed out waiting for ')
+        print(f'[wait] {label}; timeout={timeout}s', flush=True)
         while time.monotonic() < deadline:
             if self.process.poll() is not None:
                 raise RuntimeError(f'Emulator exited early with code {self.process.returncode}')
+            log = self.evidence / 'emulator.log'
+            with log.open('rb') as stream:
+                stream.seek(max(0, log.stat().st_size - 16384))
+                tail = stream.read().decode(errors='replace')
+            if 'Kernel panic - not syncing:' in tail:
+                raise RuntimeError('Guest kernel panic; see evidence/emulator.log')
             if probe():
+                print(f'[ready] {label}; elapsed={time.monotonic() - started:.0f}s', flush=True)
                 return
+            now = time.monotonic()
+            if now >= next_report:
+                try:
+                    state = self.call('get-state', check=False, timeout=5) or 'unavailable'
+                except subprocess.TimeoutExpired:
+                    state = 'adb-timeout'
+                print(f'[waiting] {label}; elapsed={now - started:.0f}s; adb={state}', flush=True)
+                last_line = next((line for line in reversed(tail.splitlines()) if line.strip()), '')
+                print(f'[emulator] {last_line[:300]}', flush=True)
+                (self.evidence / 'progress.json').write_text(json.dumps({'stage': label, 'elapsed_seconds': int(now - started), 'adb': state, 'last_emulator_line': last_line}) + '\n')
+                next_report = now + 30
             time.sleep(3)
         raise TimeoutError(description)
 
@@ -61,9 +83,9 @@ class Device:
         return text
 
 
-def verify(sdk, work, manifest, accel='on', boot_timeout=420, port=5580):
+def verify(sdk, work, manifest, accel='on', boot_timeout=180, port=5580, cold_boot_only=False):
     require_arm64(manifest['image'])
-    if platform.machine().lower() not in ('arm64', 'aarch64'):
+    if platform.system() not in ('Darwin', 'Linux') or platform.machine().lower() not in ('arm64', 'aarch64'):
         raise ValueError('ARM64 boot verification requires a native ARM64 emulator host')
     if accel not in ('on', 'off') or not 60 <= boot_timeout <= 1800 or port % 2 or not 5554 <= port <= 5682:
         raise ValueError('Invalid emulator acceleration, timeout, or console port')
@@ -91,7 +113,8 @@ def verify(sdk, work, manifest, accel='on', boot_timeout=420, port=5580):
     try:
         with (evidence / 'emulator.log').open('w') as log:
             command = emulator_command(sdk, accel, port)
-            device.process = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT, env=env)
+            print(f'[start] {shlex.join(command)}', flush=True)
+            device.process = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT, env=env, start_new_session=True)
             device.ready()
             report['checks']['abi'] = device.shell('getprop', 'ro.product.cpu.abi')
             report['checks']['machine'] = device.shell('/system/bin/toybox', 'uname', '-m')
@@ -101,6 +124,7 @@ def verify(sdk, work, manifest, accel='on', boot_timeout=420, port=5580):
             expected_page = 16384 if manifest['image']['page_size'] == '16k' else 4096
             if report['checks']['page_size'] != expected_page:
                 raise AssertionError('Runtime page size differs from the official image selection')
+            print(f'[runtime] ABI={report["checks"]["abi"]}; page_size={report["checks"]["page_size"]}', flush=True)
             for package in ('com.google.android.gms', 'com.google.android.gsf', 'com.google.android.apps.nexuslauncher', 'com.google.android.inputmethod.latin'):
                 if 'package:' not in device.shell('pm', 'path', package):
                     raise AssertionError('Core application verification failed: ' + package)
@@ -124,6 +148,7 @@ def verify(sdk, work, manifest, accel='on', boot_timeout=420, port=5580):
                     raise AssertionError('Status bar padding verification failed: ' + value)
             report['checks']['overlays'] = True
             if manifest['ksu']:
+                print('[check] KernelSU initialization and shell authorization', flush=True)
                 device.wait(lambda: device.shell('getprop', 'sys.avdlite.ksu_ready', check=False) == '1', 'Timed out waiting for KernelSU initialization', timeout=120)
                 uid = device.shell('su', '-c', 'id')
                 if 'uid=0' not in uid:
@@ -134,10 +159,15 @@ def verify(sdk, work, manifest, accel='on', boot_timeout=420, port=5580):
             else:
                 if 'package:' in device.shell('pm', 'path', 'me.weishu.kernelsu', check=False):
                     raise AssertionError('Standard image unexpectedly contains the KernelSU manager')
+            if cold_boot_only:
+                report['status'] = 'cold_boot_passed'
+                print('[cold-boot-passed] Diagnostic only; release packaging remains blocked', flush=True)
+                return
             device.shell('cmd', 'uimode', 'night', 'custom_schedule')
             for key, value in [('dark_theme_custom_start_time', '79200000000'), ('dark_theme_custom_end_time', '21600000000')]:
                 device.shell('settings', 'put', 'secure', key, value)
             before = device.shell('cat', '/proc/sys/kernel/random/boot_id')
+            print('[reboot] Checking a new boot identity and persistent settings', flush=True)
             device.call('reboot')
             device.wait(lambda: (value := device.shell('cat', '/proc/sys/kernel/random/boot_id', check=False)) not in ('', before), 'Timed out waiting for a new boot_id')
             device.ready()
@@ -159,8 +189,10 @@ def verify(sdk, work, manifest, accel='on', boot_timeout=420, port=5580):
             device.capture('uimode.txt', 'dumpsys', 'uimode')
             device.capture('overlays.txt', 'cmd', 'overlay', 'list')
             report['status'] = 'passed'
-    except Exception as error:
-        report.update(status='failed', error=str(error))
+            print('[passed] ARM64 cold boot, reboot and runtime checks', flush=True)
+    except BaseException as error:
+        report.update(status='cancelled' if isinstance(error, KeyboardInterrupt) else 'failed', error=str(error))
+        (work / 'verification.json').write_text(json.dumps(report, indent=2) + '\n')
         raise
     finally:
         if device.process is not None:
@@ -176,7 +208,7 @@ def verify(sdk, work, manifest, accel='on', boot_timeout=420, port=5580):
             try:
                 device.process.wait(timeout=20)
             except subprocess.TimeoutExpired:
-                device.process.kill()
+                os.killpg(device.process.pid, signal.SIGKILL)
                 device.process.wait(timeout=10)
         (work / 'verification.json').write_text(json.dumps(report, indent=2, ensure_ascii=False) + '\n')
     print(json.dumps(report, indent=2, ensure_ascii=False))
@@ -187,7 +219,8 @@ if __name__ == '__main__':
     for name in ('sdk', 'work', 'manifest'):
         parser.add_argument('--' + name, type=Path, required=True)
     parser.add_argument('--accel', choices=('on', 'off'), default='on')
-    parser.add_argument('--boot-timeout', type=int, default=420)
+    parser.add_argument('--boot-timeout', type=int, default=180)
     parser.add_argument('--port', type=int, default=5580)
+    parser.add_argument('--cold-boot-only', action='store_true')
     args = parser.parse_args()
-    verify(args.sdk, args.work, json.loads(args.manifest.read_text()), args.accel, args.boot_timeout, args.port)
+    verify(args.sdk, args.work, json.loads(args.manifest.read_text()), args.accel, args.boot_timeout, args.port, args.cold_boot_only)
