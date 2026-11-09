@@ -40,9 +40,15 @@ class BootProgressTests(unittest.TestCase):
 
     def test_proc_stat_parser_uses_user_and_system_cpu_fields(self):
         fields = ['S'] + ['0'] * 10 + ['125', '75'] + ['0'] * 8
-        samples = process_cpu_samples('system_server 123 (system server) ' + ' '.join(fields) + '\nzygote64 denied')
+        samples = process_cpu_samples('123 (system server) ' + ' '.join(fields) + '\ndenied', {123: 'system_server'})
         self.assertEqual(samples, {'system_server': (123, 200)})
 
     def test_host_cpu_only_observes_this_emulators_process_tree(self):
         listing = '10 1 0:00.01 emulator\n11 10 2:30.50 qemu-system-aarch64-headless\n12 1 9:00.00 qemu-system-aarch64-headless'
         self.assertEqual(emulator_cpu_sample(listing, 10), {'host_qemu': (11, 15050)})
+
+    def test_cpu_targets_are_learned_without_repeated_process_scans(self):
+        progress = BootProgress(0)
+        progress.kernel("[  10.123][ T1] init: ... started service 'zygote' has pid 100", 10)
+        progress.android('device', '11-09 08:12:34.123 200 201 I PackageManager: collecting certs', 20)
+        self.assertEqual(progress.cpu_targets, {'zygote64': 100, 'system_server': 200})

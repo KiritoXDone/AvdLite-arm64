@@ -70,16 +70,24 @@ class Device:
                     state = 'adb-timeout'
                 android_log = ''
                 cpu = {}
+                observer_error = None
                 if state == 'device':
                     try:
                         android_log = self.shell('logcat', '-b', 'all', '-d', '-t', '80', check=False, timeout=5)
-                        query = 'for n in system_server zygote64 artd dex2oat64 installd; do for p in $(pidof "$n"); do printf "%s " "$n"; cat "/proc/$p/stat"; done; done'
-                        cpu = process_cpu_samples(self.shell('sh', '-c', query, check=False, timeout=5))
                     except subprocess.TimeoutExpired:
-                        pass
+                        observer_error = 'logcat sampling timed out'
                 progress.android(state, android_log, time.monotonic())
+                if state == 'device' and progress.cpu_targets:
+                    names = {pid: name for name, pid in progress.cpu_targets.items()}
+                    try:
+                        stats = self.shell('cat', *(f'/proc/{pid}/stat' for pid in names), check=False, timeout=5)
+                        cpu = process_cpu_samples(stats, names)
+                        if not cpu:
+                            observer_error = 'framework /proc stat unavailable'
+                    except subprocess.TimeoutExpired:
+                        observer_error = 'framework CPU sampling timed out'
                 progress.cpu(cpu, time.monotonic())
-                if state != 'device' and progress.kernel_line:
+                if (state != 'device' or not cpu) and progress.kernel_line:
                     try:
                         listing = subprocess.run(['ps', '-ax', '-o', 'pid=,ppid=,time=,comm='],
                                                  capture_output=True, text=True, check=True, timeout=5).stdout
@@ -92,7 +100,9 @@ class Device:
                 last_line = progress.android_line or progress.kernel_line
                 print(f'[waiting] {label}; elapsed={now - started:.0f}s; adb={state}; guest_idle={idle:.0f}s; cpu={cpu}', flush=True)
                 print(f'[guest] {last_line[:300]}', flush=True)
-                (self.evidence / 'progress.json').write_text(json.dumps({'stage': label, 'elapsed_seconds': int(now - started), 'adb': state, 'guest_idle_seconds': int(idle), 'last_guest_line': last_line, 'process_cpu': cpu}) + '\n')
+                if observer_error:
+                    print(f'[observer] {observer_error}', flush=True)
+                (self.evidence / 'progress.json').write_text(json.dumps({'stage': label, 'elapsed_seconds': int(now - started), 'adb': state, 'guest_idle_seconds': int(idle), 'last_guest_line': last_line, 'process_cpu': cpu, 'cpu_targets': progress.cpu_targets, 'observer_error': observer_error}) + '\n')
                 next_report = now + 30
             if progress.idle_seconds(time.monotonic()) >= 90:
                 raise TimeoutError(f'Guest made no progress for 90 seconds while waiting for {label}')

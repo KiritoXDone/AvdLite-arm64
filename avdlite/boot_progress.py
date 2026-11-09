@@ -18,10 +18,15 @@ class BootProgress:
         self.seen_kernel = set()
         self.seen_android = set()
         self.process_samples = {}
+        self.cpu_targets = {}
 
     def kernel(self, tail, now):
         lines = [line for line in tail.splitlines() if re.search(r'\[\s*\d+\.\d+\]', line)]
         for line in lines:
+            service = re.search(r"started service '(zygote|artd|installd)' has pid (\d+)", line)
+            if service:
+                name = 'zygote64' if service[1] == 'zygote' else service[1]
+                self.cpu_targets[name] = int(service[2])
             key = fingerprint(line)
             if key not in self.seen_kernel:
                 self.seen_kernel.add(key)
@@ -33,6 +38,13 @@ class BootProgress:
         if state == 'device' and self.adb_state != 'device':
             self.last_activity = now
         for line in lines:
+            header = re.match(r'^\d\d-\d\d\s+\S+\s+(\d+)\s+\d+\s+\w\s+([^:]+):', line)
+            if header:
+                tag = header[2].strip()
+                role = ('system_server' if re.search(r'PackagePars|PackageManager|SystemServer|SystemServiceManager|ActivityManager|WindowManager|boot_progress', tag)
+                        else 'zygote64' if 'Zygote' in tag else tag if tag in ('artd', 'dex2oat64', 'installd') else None)
+                if role:
+                    self.cpu_targets[role] = int(header[1])
             if not re.search(r'boot_progress|PackagePars|PackageManager|SystemServer|SystemServiceManager|ActivityManager|Zygote|zygote|apexd|WindowManager|KernelSU|dex2oat|artd', line):
                 continue
             key = fingerprint(line)
@@ -55,13 +67,15 @@ class BootProgress:
             self.process_samples[name] = (pid, ticks)
 
 
-def process_cpu_samples(output):
+def process_cpu_samples(output, names_by_pid):
     samples = {}
     for line in output.splitlines():
         try:
-            name, stat = line.split(' ', 1)
-            pid = int(stat.split(' ', 1)[0])
-            fields = stat.rsplit(')', 1)[1].split()
+            pid = int(line.split(' ', 1)[0])
+            name = names_by_pid.get(pid)
+            if name is None:
+                continue
+            fields = line.rsplit(')', 1)[1].split()
             samples[name] = (pid, int(fields[11]) + int(fields[12]))
         except (ValueError, IndexError):
             continue
