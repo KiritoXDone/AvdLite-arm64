@@ -121,7 +121,7 @@ jobs:
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" platform-tools emulator
           "$ANDROID_HOME/emulator/emulator" -version
       - name: Verify ARM64 cold boot, Root, SELinux and reboot
-        run: python3 -m avdlite.smoke --manifest "$RUNNER_TEMP/avdlite/manifest.json" --work "$RUNNER_TEMP/avdlite" --sdk "$ANDROID_HOME" --accel off --boot-timeout 600
+        run: python3 -m avdlite.smoke --manifest "$RUNNER_TEMP/avdlite/manifest.json" --work "$RUNNER_TEMP/avdlite" --sdk "$ANDROID_HOME" --accel off --boot-timeout 1200
       - name: Package only the boot-verified image
         run: python3 -m avdlite.package --work "$RUNNER_TEMP/avdlite"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

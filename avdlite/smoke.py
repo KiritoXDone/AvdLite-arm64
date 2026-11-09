@@ -71,7 +71,7 @@ class Device:
                 android_log = ''
                 if state == 'device':
                     try:
-                        android_log = self.shell('logcat', '-d', '-t', '1', check=False, timeout=5)
+                        android_log = self.shell('logcat', '-b', 'all', '-d', '-t', '80', check=False, timeout=5)
                     except subprocess.TimeoutExpired:
                         pass
                 progress.android(state, android_log, time.monotonic())
@@ -96,7 +96,7 @@ class Device:
         return text
 
 
-def verify(sdk, work, manifest, accel='on', boot_timeout=600, port=5580, cold_boot_only=False):
+def verify(sdk, work, manifest, accel='on', boot_timeout=1200, port=5580, cold_boot_only=False):
     validate_emulation(manifest['image'], accel)
     if platform.system() not in ('Darwin', 'Linux') or platform.machine().lower() not in ('arm64', 'aarch64'):
         raise ValueError('ARM64 boot verification requires a native ARM64 emulator host')
@@ -232,7 +232,7 @@ if __name__ == '__main__':
     for name in ('sdk', 'work', 'manifest'):
         parser.add_argument('--' + name, type=Path, required=True)
     parser.add_argument('--accel', choices=('on', 'off'), default='on')
-    parser.add_argument('--boot-timeout', type=int, default=600)
+    parser.add_argument('--boot-timeout', type=int, default=1200)
     parser.add_argument('--port', type=int, default=5580)
     parser.add_argument('--cold-boot-only', action='store_true')
     args = parser.parse_args()

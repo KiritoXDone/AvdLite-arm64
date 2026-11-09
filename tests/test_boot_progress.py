@@ -22,3 +22,10 @@ class BootProgressTests(unittest.TestCase):
         progress.android('device', '--------- beginning of main\n11-09 08:01 SystemServer: starting', 40)
         progress.android('device', '11-09 08:02 PackageManager: scanned packages', 100)
         self.assertEqual(progress.idle_seconds(120), 20)
+
+    def test_retry_timestamps_and_pids_are_not_new_progress(self):
+        progress = BootProgress(0)
+        progress.kernel("[  10.123][ T1] init: service zygote pid 123 failed", 10)
+        progress.kernel("[  80.234][ T1] init: service zygote pid 456 failed", 80)
+        progress.android('unavailable', '11-09 08:10:10.123 123 456 I logd: new reader', 80)
+        self.assertEqual(progress.idle_seconds(100), 90)
